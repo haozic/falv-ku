@@ -199,39 +199,84 @@ mark { background: #ffe58a; color: #4a3600; padding: 0 1px; border-radius: 2px; 
 .card-link { display: block; color: inherit; }
 .card-link:active { background: var(--mcode-surface-muted); }
 
-/* 门类磁贴 */
-.cat-grid {
+/* 首页统计条 */
+.stat-row {
   display: grid;
-  grid-template-columns: repeat(4, 1fr);
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 6px;
+  margin-bottom: 14px;
+}
+.stat-cell {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+}
+.stat-cell b {
+  font-size: 17px;
+  font-weight: 600;
+  line-height: 1.3;
+  color: var(--mcode-text);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.stat-cell span {
+  font-size: 11px;
+  color: var(--mcode-text-subtle);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* 体系概览卡片（首页）：只到体系一级，门类明细在「体系」页 */
+.sys-grid {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
   gap: 10px;
 }
-.cat-tile {
+.sys-grid > * { min-width: 0; }
+.sys-card {
   background: var(--mcode-surface);
   border: 1px solid var(--mcode-border);
   border-radius: 12px;
-  padding: 12px 6px;
-  text-align: center;
+  padding: 12px 13px;
   display: block;
   color: inherit;
+  box-shadow: var(--mcode-shadow);
 }
-.cat-tile:active { background: var(--mcode-surface-muted); }
-.cat-tile .ct-name { font-size: 13px; font-weight: 500; margin-top: 6px; }
-.cat-tile .ct-count { font-size: 11px; color: var(--mcode-text-subtle); }
-.cat-tile i {
-  display: block;
-  width: 26px;
-  height: 26px;
-  margin: 0 auto;
-  border-radius: 8px;
-  background: var(--mcode-accent);
+.sys-card:active { background: var(--mcode-surface-muted); }
+.sys-top {
+  display: flex;
+  align-items: center;
+  margin-bottom: 6px;
 }
-.cat-tile[data-tone="gold"] i { background: linear-gradient(135deg, #d4a017, #b8860b); }
-.cat-tile[data-tone="blue"] i { background: linear-gradient(135deg, #2f6feb, #1c4fc4); }
-.cat-tile[data-tone="teal"] i { background: linear-gradient(135deg, #0f9b8e, #0a7369); }
-.cat-tile[data-tone="purple"] i { background: linear-gradient(135deg, #8a4b9c, #6b3479); }
-.cat-tile[data-tone="slate"] i { background: linear-gradient(135deg, #6b7a99, #4e5b73); }
+.sys-top > * + * { margin-left: 6px; }
+.sys-name {
+  font-size: 14px;
+  font-weight: 600;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.sys-count {
+  font-size: 11px;
+  color: var(--mcode-text-subtle);
+  margin-left: auto;
+  padding-left: 6px;
+  white-space: nowrap;
+}
+.sys-cats {
+  font-size: 11px;
+  line-height: 1.6;
+  color: var(--mcode-text-muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+}
 
-/* 体系分组 */
+/* 体系分组（体系页） */
 .group-block { margin-bottom: 20px; }
 .group-head {
   display: flex;
@@ -751,6 +796,6 @@ mark { background: #ffe58a; color: #4a3600; padding: 0 1px; border-radius: 2px; 
 
 /* 窄屏微调 */
 @media (max-width: 380px) {
-  .cat-grid { grid-template-columns: repeat(3, 1fr); }
+  .sys-grid { grid-template-columns: 1fr; }
   .meta-grid { grid-template-columns: 1fr; }
 }

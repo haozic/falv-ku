@@ -107,7 +107,7 @@
 
   var KEY = {
     fav: 'fg.fav.v1', custom: 'fg.custom.v1', settings: 'fg.settings.v1',
-    recent: 'fg.recent.v1', marks: 'fg.marks.v1'
+    recent: 'fg.recent.v1', marks: 'fg.marks.v1', history: 'fg.history.v1'
   };
 
   function get(key, fallback) {
@@ -223,6 +223,21 @@
       },
       clear: function () { set(KEY.recent, []); }
     },
+    /* 检索历史：首页「最近检索」。党务工作者反复查同样的关键词，命中率很高 */
+    history: {
+      list: function () { return get(KEY.history, []) || []; },
+      push: function (q) {
+        q = String(q === undefined || q === null ? '' : q).trim();
+        if (!q) return;
+        var arr = Store.history.list().filter(function (x) { return x !== q; });
+        arr.unshift(q);
+        set(KEY.history, arr.slice(0, 10));
+      },
+      remove: function (q) {
+        set(KEY.history, Store.history.list().filter(function (x) { return x !== q; }));
+      },
+      clear: function () { set(KEY.history, []); }
+    },
     settings: {
       all: function () {
         var s = get(KEY.settings, {});
@@ -274,6 +289,9 @@
     pages: 1,
     loading: false,
     loadTip: '',
+    /* 静态站两段式检索：partial=true 表示结果只含元信息命中，正文分片仍在下载 */
+    partial: false,
+    loadingBodies: false,
     searchLoaded: false,
     docCache: {}
   };
@@ -362,15 +380,19 @@
     return wrap;
   }
 
-  /* ============================================================ 视图：首页 */
-
+  /* ============================================================ 视图：首页
+   *
+   * 首页只放「打开就能用」的东西，职责单一，不和底部标签页 / 「我的」页重复：
+   *   ① 检索卡   —— 全站唯一的搜索入口 + 库规模概览
+   *   ② 法规体系 —— 5 个体系的概览卡片；门类明细在「体系」页，这里不再列第二遍
+   *   ③ 最近检索 —— 本机检索历史
+   * 「最近浏览 / 收藏 / 笔记 / 自建」是个人数据，统一放在「我的」页。
+   */
   function viewHome(view) {
     var meta = State.meta;
-    var cats = meta ? meta.categories.filter(function (c) {
-      return meta.stats[c.id] && meta.stats[c.id].count > 0;
-    }) : [];
+    if (!meta) { view.appendChild(skeletonList(3)); return; }
 
-    /* 快捷检索 */
+    /* ---------- ① 检索卡 ---------- */
     var input = el('input', {
       type: 'search', placeholder: '检索党章党规、法律法规条文…', 'aria-label': '检索法规',
       onkeydown: function (e) { if (e.key === 'Enter') { e.preventDefault(); goSearch(input.value); } }
@@ -388,80 +410,102 @@
       })
     ]);
 
+    function statCell(v, label) {
+      return el('div', { class: 'stat-cell' }, [
+        el('b', { text: v }),
+        el('span', { text: label })
+      ]);
+    }
+    function wan(n) {
+      n = Number(n) || 0;
+      /* 只返回数字，单位放在标签里（「1347.2」+「万字」），
+         否则数值太长会把相邻两格挤在一起 */
+      if (n >= 10000) return (n / 10000).toFixed(1).replace(/\.0$/, '');
+      return String(n);
+    }
+    var catTotal = 0;
+    for (var ck in meta.stats) {
+      if (meta.stats.hasOwnProperty(ck) && meta.stats[ck] && meta.stats[ck].count) catTotal++;
+    }
     var hero = el('section', { class: 'card' }, [
-      el('div', { style: 'font-size:16px;font-weight:600;margin-bottom:4px' , text: '法规速查' }),
-      el('div', { class: 'section-desc', style: 'margin-bottom:12px', text: '共 ' + (meta ? meta.total : 0) + ' 部法规 · ' + (meta ? fmtNum(meta.totalChars) : '') + '，覆盖党内法规与国家法律法规' }),
+      el('div', { class: 'stat-row' }, [
+        statCell(String(meta.total || 0), '部法规'),
+        statCell(wan(meta.totalChars), '万字'),
+        statCell(String(catTotal), '个门类'),
+        statCell(String(meta.groups.length), '个体系')
+      ]),
       bar
     ]);
 
-    /* 常用门类 */
-    var grid = el('div', { class: 'cat-grid' });
-    cats.forEach(function (c) {
-      var st = meta.stats[c.id] || {};
-      grid.appendChild(el('a', { class: 'cat-tile', href: '#/cat/' + c.id, 'data-tone': c.tone || '' }, [
-        el('i', { 'aria-hidden': 'true' }),
-        el('div', { class: 'ct-name', text: c.name }),
-        el('div', { class: 'ct-count', text: (st.count || 0) + ' 部' })
+    /* ---------- ② 法规体系（体系级概览，门类明细去「体系」页看） ---------- */
+    var sysGrid = el('div', { class: 'sys-grid' });
+    meta.groups.forEach(function (g) {
+      var total = 0, names = [];
+      g.cats.forEach(function (cid) {
+        var st = meta.stats[cid];
+        if (!st || !st.count) return;
+        total += st.count;
+        names.push(st.name);
+      });
+      if (!total) return;
+      sysGrid.appendChild(el('a', { class: 'sys-card', href: '#/tree/' + g.id }, [
+        el('div', { class: 'sys-top' }, [
+          el('span', { class: 'group-dot', style: 'background:' + (g.color || 'var(--mcode-accent)') }),
+          el('span', { class: 'sys-name', text: g.name }),
+          el('span', { class: 'sys-count', text: total + ' 部' })
+        ]),
+        el('div', { class: 'sys-cats', text: names.join(' · ') })
       ]));
     });
 
-    /* 体系分组 */
-    var groups = el('div');
-    if (meta) {
-      meta.groups.forEach(function (g) {
-        var total = 0;
-        g.cats.forEach(function (cid) { if (meta.stats[cid]) total += meta.stats[cid].count; });
-        if (!total) return;
-        var block = el('div', { class: 'group-block' }, [
-          el('div', { class: 'group-head' }, [
-            el('span', { class: 'group-dot', style: 'background:' + (g.color || 'var(--mcode-accent)') }),
-            el('span', { class: 'group-name', text: g.name }),
-            el('span', { class: 'group-count', text: total + ' 部' })
-          ]),
-          el('div', { class: 'section-desc', style: 'margin-bottom:8px', text: g.desc || '' })
-        ]);
-        var chips = el('div', { class: 'chips' });
-        g.cats.forEach(function (cid) {
-          var st = meta.stats[cid];
-          if (!st || !st.count) return;
-          chips.appendChild(el('a', {
-            class: 'chip', href: '#/cat/' + cid,
-            text: st.name + ' ' + st.count
-          }));
-        });
-        block.appendChild(chips);
-        groups.appendChild(block);
-      });
-    }
-
-    /* 最近浏览 */
-    var recent = Store.recent.list().slice(0, 6);
-    var recentBox = null;
-    if (recent.length) {
-      var rl = el('div', { class: 'doc-list' });
-      recentBox = el('section', { class: 'section' }, [
-        el('div', { class: 'section-head' }, [
-          el('span', { class: 'section-title', text: '最近浏览' }),
-          el('a', { class: 'section-more', href: '#/me', text: '我的 ›' })
-        ]),
-        rl
-      ]);
-      loadRecords(recent).then(function (recs) {
-        recs.forEach(function (r) { if (r) rl.appendChild(docCard(r)); });
-        if (!rl.children.length) recentBox.style.display = 'none';
-      });
-    }
+    /* ---------- ③ 最近检索 ---------- */
+    var hist = Store.history.list();
 
     view.appendChild(el('section', { class: 'section' }, [hero]));
     view.appendChild(el('section', { class: 'section' }, [
-      el('div', { class: 'section-head' }, [el('span', { class: 'section-title', text: '门类速览' })]),
-      grid
+      el('div', { class: 'section-head' }, [
+        el('span', { class: 'section-title', text: '法规体系' }),
+        el('a', { class: 'section-more', href: '#/tree', text: '全部门类 ›' })
+      ]),
+      sysGrid
     ]));
-    view.appendChild(el('section', { class: 'section' }, [
-      el('div', { class: 'section-head' }, [el('span', { class: 'section-title', text: '法规体系' })]),
-      groups
-    ]));
-    if (recentBox) view.appendChild(recentBox);
+    if (hist.length) {
+      var hbox = el('div', { class: 'chips' });
+      hist.forEach(function (q) {
+        hbox.appendChild(el('button', {
+          class: 'chip', type: 'button', text: q,
+          onclick: function () { goSearch(q); }
+        }));
+      });
+      view.appendChild(el('section', { class: 'section' }, [
+        el('div', { class: 'section-head' }, [
+          el('span', { class: 'section-title', text: '最近检索' }),
+          el('button', {
+            class: 'section-more', style: 'background:none;border:0;padding:0', text: '清空',
+            onclick: function () { Store.history.clear(); route(); }
+          })
+        ]),
+        hbox
+      ]));
+    }
+
+    /* ---------- ④ 最新发布（数据驱动，不硬编码法规 id） ---------- */
+    var latestBox = el('div', { class: 'doc-list' });
+    var latestSection = el('section', { class: 'section' }, [
+      el('div', { class: 'section-head' }, [
+        el('span', { class: 'section-title', text: '最新发布' }),
+        el('a', { class: 'section-more', href: '#/timeline', text: '时间轴 ›' })
+      ]),
+      latestBox
+    ]);
+    view.appendChild(latestSection);
+    api('/api/search', { sort: 'new', page: 1, size: 6 }).then(function (res) {
+      latestBox.innerHTML = '';
+      (res.hits || []).forEach(function (r) { latestBox.appendChild(docCard(r)); });
+      if (!latestBox.children.length) latestSection.style.display = 'none';
+    }).catch(function () {
+      latestSection.style.display = 'none';
+    });
   }
 
   /* 收藏 / 笔记 / 最近浏览里的条目元信息。
@@ -557,10 +601,6 @@
     if (State.loading) {
       listBox.appendChild(skeletonList(4));
       count.textContent = '检索中…';
-      /* 静态部署：首次检索要先载入正文分片，把进度告诉用户 */
-      if (State.loadTip) {
-        listBox.appendChild(el('div', { class: 'load-tip', id: 'loadTip', text: State.loadTip }));
-      }
       return;
     }
 
@@ -571,8 +611,17 @@
       count.textContent = '共 ' + State.total + ' 条 · 用时 ' + (State.took || 0) + 'ms';
     }
 
+    /* 静态站：正文分片还在后台下载 —— 先出元信息命中，等索引建好再补全文命中 */
+    if (State.loadingBodies) {
+      listBox.appendChild(el('div', { class: 'load-tip', id: 'loadTip', text: State.loadTip || '正在载入全文索引…' }));
+    }
+
     if (!State.results.length) {
-      listBox.appendChild(emptyState('没有找到匹配的法规', '换个关键词，或调整门类筛选', 'search'));
+      if (State.loadingBodies) {
+        listBox.appendChild(emptyState('正在建立全文索引', '首次检索需下载正文分片（约 12MB，仅此一次）', 'clock'));
+      } else {
+        listBox.appendChild(emptyState('没有找到匹配的法规', '换个关键词，或调整门类筛选', 'search'));
+      }
     } else {
       State.results.forEach(function (r) { listBox.appendChild(docCard(r, r.snippetHtml)); });
     }
@@ -953,8 +1002,17 @@
 
   /* ============================================================ 视图：体系 */
 
-  function viewTree(view) {
+  function viewTree(view, param) {
     var meta = State.meta;
+    if (!meta) { view.appendChild(skeletonList(3)); return; }
+
+    /* #/tree/<groupId>：从首页体系卡片直接落到某个体系 */
+    if (param) {
+      var known = false;
+      meta.groups.forEach(function (g) { if (g.id === param) known = true; });
+      if (known) State.group = param;
+    }
+
     var chips = el('div', { class: 'chips' });
     chips.appendChild(el('button', {
       class: 'chip', 'aria-pressed': State.group === 'all' ? 'true' : 'false', text: '全部体系',
@@ -979,7 +1037,8 @@
           el('span', { class: 'group-dot', style: 'background:' + (g.color || 'var(--mcode-accent)') }),
           el('span', { class: 'group-name', text: g.name }),
           el('span', { class: 'group-count', text: total + ' 部' })
-        ])
+        ]),
+        g.desc ? el('div', { class: 'section-desc', style: 'margin:6px 0 8px', text: g.desc }) : null
       ]);
       var cl = el('div', { class: 'chips' });
       g.cats.forEach(function (cid) {
@@ -1332,14 +1391,22 @@
     switch (r.name) {
       case 'home': viewHome(view); break;
       case 'search':
-        /* 首次进入检索页：拉一次全库（按最新排序），避免停在空结果态 */
-        if (!State.searchLoaded) {
+        /* #/search/关键词 —— 深链接直达（可分享、可外部跳转）。
+           注意 searchLoaded 要先置 true，否则 runSearch 完成后调 route() 会再触发一次，
+           形成无限循环。 */
+        if (r.param && !State.searchLoaded) {
+          State.lastQuery = r.param;
+          State.page = 1;
+          State.searchLoaded = true;
+          runSearch(r.param, 1);
+        } else if (!State.searchLoaded) {
+          /* 首次进入检索页：拉一次全库（按最新排序），避免停在空结果态 */
           State.searchLoaded = true;
           runSearch(State.lastQuery || '', 1);
         }
         viewSearch(view);
         break;
-      case 'tree': viewTree(view); break;
+      case 'tree': viewTree(view, r.param); break;
       case 'timeline': viewTimeline(view); break;
       case 'me': viewMe(view); break;
       case 'doc': viewDoc(view, r.param); break;
@@ -1370,6 +1437,8 @@
     State.lastQuery = q === undefined ? State.lastQuery : q;
     State.page = page || 1;
     State.loading = true;
+    /* 记入本机检索历史：首页「最近检索」用 */
+    if (State.lastQuery && String(State.lastQuery).trim()) Store.history.push(State.lastQuery);
     var sort = State.sort;
     /* 空查询没有「相关度」可言，按最新在前更符合浏览直觉 */
     if (!State.lastQuery && sort === 'relevance') { sort = 'new'; State.sort = 'new'; }
@@ -1380,6 +1449,8 @@
       State.loading = false;
       State.loadTip = '';
       State.searchLoaded = true;
+      State.partial = !!res.partial;
+      State.loadingBodies = !!res.loadingBodies;
       State.took = res.took;
       State.total = res.total;
       State.pages = res.pages;
@@ -1588,14 +1659,28 @@
     /* 主题 */
     applyTheme(Store.settings.get('theme') || 'light');
 
-    /* 静态部署：正文分片加载进度（首次检索要载入 24 片，约 39MB） */
+    /* 静态部署：正文分片加载进度（首次全文检索要载入 24 片，传输约 12MB） */
     if (window.FGStaticAPI && window.FGStaticAPI.onProgress) {
       window.FGStaticAPI.onProgress(function (p) {
         State.loadTip = (p && p.total)
-          ? ('首次检索需载入正文分片，已完成 ' + p.done + ' / ' + p.total + '（约 39MB，仅此一次）')
+          ? ('正在载入正文索引，已完成 ' + p.done + ' / ' + p.total + ' 片（约 12MB，仅此一次）')
           : '';
         var tip = document.getElementById('loadTip');
-        if (tip) tip.textContent = State.loadTip;
+        if (tip) tip.textContent = State.loadTip || '正在载入全文索引…';
+      });
+    }
+
+    /* 正文索引建好后：如果用户正在检索页，重跑一次把「条文命中」补上 */
+    if (window.FGStaticAPI && window.FGStaticAPI.onBodiesReady) {
+      window.FGStaticAPI.onBodiesReady(function () {
+        State.loadTip = '';
+        State.loadingBodies = false;
+        if (State.route.name === 'search' && State.lastQuery) {
+          runSearch(State.lastQuery, State.page);
+        } else {
+          var tip = document.getElementById('loadTip');
+          if (tip && tip.parentNode) tip.parentNode.removeChild(tip);
+        }
       });
     }
 

@@ -68,13 +68,24 @@
     bodyLoaded: {},
     metaPromise: null,
     progress: { done: 0, total: 0, key: '' },
-    listeners: []
+    listeners: [],
+    /* 正文分片全部到齐后触发一次，客户端据此刷新检索结果 */
+    bodiesReady: false,
+    readyListeners: []
   };
 
   function emitProgress(done, total, key) {
     S.progress = { done: done, total: total, key: key };
     for (var i = 0; i < S.listeners.length; i++) {
       try { S.listeners[i](S.progress); } catch (e) { /* 单个监听器出错不影响其它 */ }
+    }
+  }
+
+  function emitBodiesReady() {
+    if (S.bodiesReady) return;
+    S.bodiesReady = true;
+    for (var i = 0; i < S.readyListeners.length; i++) {
+      try { S.readyListeners[i](); } catch (e) { /* 单个监听器出错不影响其它 */ }
     }
   }
 
@@ -119,45 +130,79 @@
 
   /**
    * 加载指定的正文分片。
+   * 同一个分片只加载一次：并发调用共享同一个 Promise（避免重复下载 +
+   * 重复 push 到 window.FG_* 全局数组里）。
    * @param {string[]} keys 分片 key（如 'party_01'）
    * @returns {Promise<object[]>} 并回记录的记录对象
    */
+  var bodyPromises = {};
+
   function ensureBodies(keys) {
-    var need = [];
-    for (var i = 0; i < keys.length; i++) {
-      var k = keys[i];
-      if (k && !S.bodyLoaded[k] && need.indexOf(k) === -1) need.push(k);
-    }
-    if (!need.length) return Promise.resolve([]);
-
-    var total = need.length;
-    var done = 0;
-    var updated = [];
-
-    /* 并行发起：网络读可以重叠，每片到达就立刻并回并增量建索引，
-       不必等 24 片全部下完才见结果。
-       注意 before 必须在 append 脚本之前取：同一全局下的多个分片会先后 push，
-       谁先到谁先取，取到的可能包含别人刚 push 的内容 —— 重复并入是幂等的。 */
     var ps = [];
-    for (var j = 0; j < need.length; j++) {
+    var fresh = [];
+    var i;
+    for (i = 0; i < keys.length; i++) {
+      var k = keys[i];
+      if (!k || S.bodyLoaded[k]) continue;
+      if (bodyPromises[k]) { ps.push(bodyPromises[k]); continue; }
+      if (fresh.indexOf(k) === -1) fresh.push(k);
+    }
+
+    for (i = 0; i < fresh.length; i++) {
       (function (key) {
         var gname = bodyGlobalOf(key);
+        /* 注意 before 必须在 append 脚本之前取：同一全局下的多个分片会先后 push，
+           谁先到谁先取，取到的可能包含别人刚 push 的内容 —— 重复并入是幂等的。 */
         var before = (w[gname] || []).length;
-        ps.push(loadScript(DATA_BASE + key + '.js?v=' + VER).then(function () {
+        var p = loadScript(DATA_BASE + key + '.js?v=' + VER).then(function () {
           var arr = w[gname] || [];
           var added = flattenChunks(arr.slice(before));
           S.bodyLoaded[key] = true;
           var up = mergeBodies(added);
-          for (var i2 = 0; i2 < up.length; i2++) w.Search.refreshDoc(up[i2]);
-          updated = updated.concat(up);
-          done++;
-          emitProgress(done, total, key);
+          /* 每片到达就立刻增量建索引，不必等 24 片全部下完才见结果 */
+          for (var j = 0; j < up.length; j++) w.Search.refreshDoc(up[j]);
+          emitProgress(countLoaded(), allBodyKeys().length, key);
           return up;
-        }));
-      })(need[j]);
+        }, function (e) {
+          /* 失败时清掉缓存的 Promise，允许下次重试 */
+          delete bodyPromises[key];
+          throw e;
+        });
+        bodyPromises[key] = p;
+        ps.push(p);
+      })(fresh[i]);
     }
 
-    return Promise.all(ps).then(function () { return updated; });
+    if (!ps.length) return Promise.resolve([]);
+    return Promise.all(ps).then(function (list) {
+      var out = [];
+      for (var a = 0; a < list.length; a++) {
+        if (!list[a]) continue;
+        for (var b = 0; b < list[a].length; b++) out.push(list[a][b]);
+      }
+      /* 全部正文分片都到齐时通知客户端刷新结果（此时才是真正的全文命中）。
+         注意：只加载了其中一片（打开单篇详情）不能算「已就绪」。 */
+      if (allBodiesLoaded()) emitBodiesReady();
+      return out;
+    });
+  }
+
+  function countLoaded() {
+    var n = 0;
+    for (var k in S.bodyLoaded) {
+      if (S.bodyLoaded.hasOwnProperty(k) && S.bodyLoaded[k]) n++;
+    }
+    return n;
+  }
+
+  /* 24 个正文分片是否全部载入 */
+  function allBodiesLoaded() {
+    var keys = allBodyKeys();
+    if (!keys.length) return false;
+    for (var i = 0; i < keys.length; i++) {
+      if (!S.bodyLoaded[keys[i]]) return false;
+    }
+    return true;
   }
 
   /* ------------------------------------------------------------ 正文块 */
@@ -511,13 +556,21 @@
 
     if (p === 'search') {
       var q = String(params.q || '').trim();
-      /* 非空检索需要全文：先把 24 个正文分片都拉下来建好索引，
-         否则只能命中标题/摘要，用户会以为「搜不到」。 */
       var needAll = q ? allBodyKeys() : [];
       return loadMeta().then(function () {
-        return needAll.length ? ensureBodies(needAll) : null;
-      }).then(function () {
-        return doSearch(params);
+        /* 两段式检索：
+           ① 立刻用「标题 / 摘要 / 标签 / 发文机关」这些元信息出结果 —— 零额外下载，毫秒级；
+           ② 正文分片（24 片，约 39MB 源码 / 传输约 12MB）在后台并行下载，
+              每片到达就并回记录、增量重建该条的索引，全文命中随之出现。
+           客户端收到 partial=true 时应显示「正在补充全文命中」，等 onBodiesReady 后重查。 */
+        var res = doSearch(params);
+        var ready = allBodiesLoaded();
+        res.partial = needAll.length > 0 && !ready;
+        res.loadingBodies = needAll.length > 0 && !ready;
+        if (needAll.length && !ready) {
+          ensureBodies(needAll).catch(function () { /* 失败不阻塞已出的元信息结果 */ });
+        }
+        return res;
       });
     }
 
@@ -602,6 +655,13 @@
     onProgress: function (cb) {
       if (typeof cb === 'function') S.listeners.push(cb);
     },
+    /* 正文分片全部到齐时回调一次：客户端据此重跑检索，补上全文命中 */
+    onBodiesReady: function (cb) {
+      if (typeof cb !== 'function') return;
+      if (S.bodiesReady) { cb(); return; }
+      S.readyListeners.push(cb);
+    },
+    bodiesReady: function () { return S.bodiesReady; },
     progress: function () { return S.progress; },
     ensureBodies: ensureBodies,
     loadMeta: loadMeta
